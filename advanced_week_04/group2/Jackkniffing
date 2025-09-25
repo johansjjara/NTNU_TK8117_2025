@@ -1,0 +1,293 @@
+
+W4 G2 Validation : Jackknife and Bootstrap
+
+J.Jacobo – M. Hilmi
+
+Jackknife
+("leave-one-out" resampling)
+
+Key Facts:
+• Ideal jackknife samples: For a dataset with n observations, there are exactly n possible resampled datasets.
+• Number of replications: Fixed by the dataset size. You create n replications, each omitting a single, different observation.
+• Resampling method: Systematically create new datasets by leaving out one observation at a time.
+
+Variance:
+SE²(θ̂) = (N-1)/N ∑(θ̂_{(i)} - θ̂_{(.)})²
+
+where θ is the model's parameter.
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import mean_squared_error
+from scipy import stats
+
+# Set random seed for reproducibility
+np.random.seed(42)
+
+# =============================================================================
+# 1. SYNTHETIC DATA GENERATION
+# =============================================================================
+
+print("Generating synthetic data...")
+n_samples = 150
+x1 = np.random.uniform(-2, 2, n_samples)
+x2 = np.random.uniform(-2, 2, n_samples)
+
+# True relationship (quadratic + interaction)
+y_true = 1.5 + 2*x1 - 1.2*x2 + 0.8*x1*x2 - 0.5*x1**2 + 0.3*x2**2
+y = y_true + 0.8 * np.random.randn(n_samples)  # add noise
+X = np.column_stack([x1, x2])
+
+print(f"Synthetic Data Formula: y = b0 + b1*x1 + b2*x2 + b3*x1*x2 + b4*x1² + b5*x2² + ε")
+print(f"Dataset shape: X={X.shape}, y={y.shape}")
+
+# =============================================================================
+# 2. JACKKNIFE COEFFICIENT ESTIMATION
+# =============================================================================
+
+print("\n" + "="*60)
+print("JACKKNIFE COEFFICIENT ESTIMATION")
+print("="*60)
+
+# Polynomial regression setup
+poly = PolynomialFeatures(degree=2, include_bias=True)
+X_poly = poly.fit_transform(X)
+
+# Jackknife resampling (leave-one-out)
+jackknife_coefs = []
+for i in range(n_samples):
+    # Create jackknife sample by leaving out the i-th observation
+    X_jack = np.delete(X_poly, i, axis=0)
+    y_jack = np.delete(y, i)
+    
+    # Fit model on jackknife sample
+    model = LinearRegression()
+    model.fit(X_jack, y_jack)
+    
+    # Store coefficients (intercept first)
+    coefs = np.insert(model.coef_, 0, model.intercept_)
+    jackknife_coefs.append(coefs)
+
+jackknife_coefs = np.array(jackknife_coefs)
+
+# Calculate nominal coefficients (full dataset)
+model_full = LinearRegression()
+model_full.fit(X_poly, y)
+coef_nominal = np.insert(model_full.coef_, 0, model_full.intercept_)
+
+# Calculate jackknife statistics
+coef_jackknife_mean = np.mean(jackknife_coefs, axis=0)
+coef_jackknife_se = np.sqrt((n_samples - 1) * np.var(jackknife_coefs, axis=0, ddof=1))
+coef_jackknife_bias = (n_samples - 1) * (coef_jackknife_mean - coef_nominal)
+
+feature_names = ['intercept'] + list(poly.get_feature_names_out(["x1", "x2"])[1:])
+
+# Display results
+print("Jackknife Results:")
+print("=" * 60)
+for i, name in enumerate(feature_names):
+    print(f"{name:>10}: Nominal = {coef_nominal[i]:7.3f}, "
+          f"Jackknife SE = {coef_jackknife_se[i]:6.3f}, "
+          f"Bias = {coef_jackknife_bias[i]:7.3f}")
+
+# =============================================================================
+# 3. VISUALIZATION: REGRESSION SURFACE WITH UNCERTAINTY
+# =============================================================================
+
+print("\n" + "="*60)
+print("VISUALIZATION: REGRESSION SURFACE WITH UNCERTAINTY")
+print("="*60)
+
+# Create grid for visualization
+x1_grid = np.linspace(X[:,0].min(), X[:,0].max(), 30)
+x2_grid = np.linspace(X[:,1].min(), X[:,1].max(), 30)
+X1_grid, X2_grid = np.meshgrid(x1_grid, x2_grid)
+
+# Prepare grid for prediction with all jackknife models
+X_grid_poly = poly.transform(np.c_[X1_grid.ravel(), X2_grid.ravel()])
+
+# Predict with all jackknife models
+jackknife_predictions = []
+for coefs in jackknife_coefs:
+    intercept = coefs[0]
+    coefficients = coefs[1:]
+    y_pred_grid = X_grid_poly[:, 1:] @ coefficients + intercept
+    y_pred_grid = y_pred_grid.reshape(X1_grid.shape)
+    jackknife_predictions.append(y_pred_grid)
+
+jackknife_predictions = np.array(jackknife_predictions)
+
+# Calculate mean and confidence intervals
+y_grid_mean = np.mean(jackknife_predictions, axis=0)
+y_grid_std = np.std(jackknife_predictions, axis=0, ddof=1)
+
+# Create plots
+fig = plt.figure(figsize=(15, 12))
+
+# Plot 1: Mean surface
+ax1 = fig.add_subplot(221, projection='3d')
+ax1.scatter(X[:,0], X[:,1], y, color='blue', alpha=0.6, s=20, label="Data")
+ax1.plot_surface(X1_grid, X2_grid, y_grid_mean, color='orange', alpha=0.6)
+ax1.set_xlabel("X1"); ax1.set_ylabel("X2"); ax1.set_zlabel("y")
+ax1.set_title("Jackknife Mean Regression Surface")
+
+# Plot 2: Uncertainty heatmap
+ax2 = fig.add_subplot(222)
+contour = ax2.contourf(X1_grid, X2_grid, y_grid_std, levels=20, cmap='viridis')
+ax2.scatter(X[:,0], X[:,1], color='red', s=10, alpha=0.6)
+ax2.set_xlabel("X1"); ax2.set_ylabel("X2")
+ax2.set_title("Jackknife Prediction Uncertainty (Std Dev)")
+plt.colorbar(contour, ax=ax2, label='Standard Deviation')
+
+# Plot 3: Coefficient variability
+ax3 = fig.add_subplot(223)
+coef_variability = np.std(jackknife_coefs, axis=0, ddof=1)
+features_display = [name.replace(' ', '') for name in feature_names]
+bars = ax3.bar(features_display, coef_variability, color='skyblue', alpha=0.7)
+ax3.set_ylabel('Standard Deviation')
+ax3.set_title('Jackknife Coefficient Variability')
+plt.xticks(rotation=45, ha='right')
+
+# Plot 4: Coefficient distributions
+ax4 = fig.add_subplot(224)
+for i in range(len(feature_names)):
+    ax4.hist(jackknife_coefs[:, i], bins=20, alpha=0.7, label=feature_names[i])
+ax4.set_xlabel('Coefficient Value')
+ax4.set_ylabel('Frequency')
+ax4.set_title('Jackknife Coefficient Distributions')
+ax4.legend()
+
+plt.tight_layout()
+plt.show()
+
+# =============================================================================
+# 4. JACKKNIFE CONFIDENCE INTERVALS
+# =============================================================================
+
+print("\n" + "="*60)
+print("JACKKNIFE CONFIDENCE INTERVALS")
+print("="*60)
+
+# Jackknife confidence intervals (percentiles)
+conf_intervals_jack = np.percentile(jackknife_coefs, [2.5, 97.5], axis=0).T
+
+# Create confidence interval plot
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.errorbar(range(len(coef_nominal)), coef_nominal, 
+            yerr=[coef_nominal - conf_intervals_jack[:, 0], 
+                  conf_intervals_jack[:, 1] - coef_nominal], 
+            fmt='o', capsize=5, label="95% CI (Jackknife)")
+ax.scatter(range(len(coef_nominal)), coef_jackknife_mean, 
+           color='red', s=80, marker='s', alpha=0.7, label="Jackknife Mean")
+ax.axhline(0, color='gray', linestyle='--')
+ax.set_xticks(range(len(feature_names)))
+ax.set_xticklabels(feature_names, rotation=45)
+ax.set_ylabel("Coefficient Value")
+ax.set_title("Jackknife 95% Confidence Intervals for Coefficients")
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# Display confidence intervals
+print("Jackknife 95% Confidence Intervals:")
+print("=" * 70)
+print(f"{'Coefficient':<12} {'Nominal':<8} {'Lower CI':<10} {'Upper CI':<10} {'Significant':<12}")
+print("-" * 70)
+for i, name in enumerate(feature_names):
+    low, high = conf_intervals_jack[i]
+    significant = "YES" if (low > 0 or high < 0) else "NO"
+    print(f"{name:<12} {coef_nominal[i]:<8.4f} {low:<10.4f} {high:<10.4f} {significant:<12}")
+
+# =============================================================================
+# 5. MODEL COMPARISON: 2nd vs 3rd ORDER POLYNOMIALS
+# =============================================================================
+
+print("\n" + "="*60)
+print("MODEL COMPARISON: 2nd vs 3rd ORDER POLYNOMIALS")
+print("="*60)
+
+# Prepare polynomial features
+poly2 = PolynomialFeatures(degree=2, include_bias=False)
+poly3 = PolynomialFeatures(degree=3, include_bias=False)
+X_poly2 = poly2.fit_transform(X)
+X_poly3 = poly3.fit_transform(X)
+
+# Nominal fits
+model2_nom = LinearRegression().fit(X_poly2, y)
+model3_nom = LinearRegression().fit(X_poly3, y)
+
+# Jackknife errors storage
+errs_2 = np.zeros((n_samples, n_samples))
+errs_3 = np.zeros((n_samples, n_samples))
+
+for i in range(n_samples):
+    # Leave one out
+    mask = np.arange(n_samples) != i
+    Xi2, yi = X_poly2[mask], y[mask]
+    Xi3 = X_poly3[mask]
+    
+    # Fit without the i-th observation
+    model2 = LinearRegression().fit(Xi2, yi)
+    model3 = LinearRegression().fit(Xi3, yi)
+    
+    # Evaluate on full dataset
+    errs_2[i] = y - model2.predict(X_poly2)
+    errs_3[i] = y - model3.predict(X_poly3)
+
+# Proper jackknife standard error formula
+def jackknife_se(jackknife_samples):
+    n_samples = jackknife_samples.shape[0]
+    theta_dot = np.mean(jackknife_samples, axis=0)
+    variance = ((n_samples - 1) / n_samples) * np.sum((jackknife_samples - theta_dot) ** 2, axis=0)
+    return np.sqrt(variance)
+
+# Compute jackknife statistics
+se_err2_jack = jackknife_se(errs_2)
+se_err3_jack = jackknife_se(errs_3)
+
+# Print comparison results
+print("2nd-order model:")
+print(f" Nominal RMSE: {np.sqrt(mean_squared_error(y, model2_nom.predict(X_poly2))):.4f}")
+print(f" Mean SE of errors (jackknife): {se_err2_jack.mean():.4f}")
+print(f" Mean variance of errors: {(se_err2_jack**2).mean():.4f}")
+
+print("\n3rd-order model:")
+print(f" Nominal RMSE: {np.sqrt(mean_squared_error(y, model3_nom.predict(X_poly3))):.4f}")
+print(f" Mean SE of errors (jackknife): {se_err3_jack.mean():.4f}")
+print(f" Mean variance of errors: {(se_err3_jack**2).mean():.4f}")
+
+# =============================================================================
+# 6. FINAL SUMMARY
+# =============================================================================
+
+print("\n" + "="*60)
+print("FINAL SUMMARY")
+print("="*60)
+
+# Create comprehensive results table
+results_df = pd.DataFrame({
+    'Coefficient': feature_names,
+    'Nominal': coef_nominal,
+    'Jackknife_Mean': coef_jackknife_mean,
+    'Jackknife_SE': coef_jackknife_se,
+    'Jackknife_Bias': coef_jackknife_bias,
+    'CI_Lower': conf_intervals_jack[:, 0],
+    'CI_Upper': conf_intervals_jack[:, 1]
+})
+
+print("Complete Jackknife Analysis Results:")
+print(results_df.round(4))
+
+print(f"\nKey Statistics:")
+print(f"- Number of jackknife samples: {n_samples}")
+print(f"- Sample size per jackknife: {n_samples-1}")
+print(f"- Average coefficient SE: {coef_jackknife_se.mean():.4f}")
+print(f"- Average absolute bias: {np.abs(coef_jackknife_bias).mean():.4f}")
+print(f"- Significant coefficients: {np.sum((conf_intervals_jack[:, 0] > 0) | (conf_intervals_jack[:, 1] < 0))}/{len(feature_names)}")
+
+print("\nJackknife analysis completed successfully!")
